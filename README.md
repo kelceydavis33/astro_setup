@@ -13,3 +13,4 @@ sys.path.insert(0, "/home/kelcey/eelg_properties/python_files")
 #Import the .py files you want
 from func import *
 ```
+I have a .ipnby file here which is a Jupyter Notebook that does all this super simply. The pythin_files folder just needs to be downloaded at the same directory level as the notebook.
