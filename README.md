@@ -1,19 +1,15 @@
 # astro_setup
 setup for experimental astrophysics work
 
-From a base directory, download setup.py, pyproject.toml, and a folder python_files. If python_files should have a file called __init__.py and it should be empty. You can add a the init file with:
-> touch python_files/__init__.py
-Should look like:
+Seteup is farily simple. Several .py files contained in python_files can be loaded into a compiler with
 
-setup.py
-pyproject.toml
-/python_project
-/python_project/__init__.py (blank, in python_project folder)
+```
+import sys
 
-Then, add an editable install by running in the command line: 
-> pip install -e .
+#Load up the directory with the .py files for importing
+sys.path.insert(0, "/home/kelcey/eelg_properties/python_files")
 
 
-File descriptors:
-- setup.py: running this will recognize the python_files package that I carry around via recognition of __init__.py, which should be blank and in the python files directory. Add it with:
- touch python_files/__init__.py
+#Import the .py files you want
+from func import *
+```
