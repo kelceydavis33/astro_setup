@@ -1,3 +1,19 @@
+import astropy.units as u
+import astropy.constants as c
+from astropy.coordinates import SkyCoord, search_around_sky
+from astropy.time import Time
+import numpy as np
+from scipy import stats
+import matplotlib.pyplot as plt
+import pandas as pd
+import glob
+from astropy.io import fits
+from itertools import combinations
+import pickle
+from astropy.cosmology import WMAP9 as cosmo
+import seaborn as sns
+from astropy.table import Table
+
 def get_color_table(dfi):
     """
     Generates a DataFrame of the colors that can be created with the input DataFrame photometry and assotiated 
@@ -729,7 +745,10 @@ def get_ew_277(df, sources):
                 ews_tot.append(np.nanmax(ews))
             except:
                 ews_tot.append(np.nan)
-    ew_lists_big, cont, spike_vals, spike_widths == 0
+    ew_lists_big = 0 
+    cont = 0
+    spike_vals = 0
+    spike_widths = 0
     return ews_tot, ew_lists_big, cont, spike_vals, spike_widths
 
 def get_ew_red_only_and_277(df, sources):
@@ -1472,4 +1491,917 @@ def reject_outliers(data, max_std):
     extreme linse
     """
     return data[abs(data - np.mean(data)) < max_std * np.std(data)]
-__all__ = ["get_color_table", "load_photometry", 'jon_plot', "cut_sides", "get_ew", "get_ew_277", "get_ew_red_only_and_277", "get_ew_red_only", "plot_class", "plot_em_all", "get_sed", 'reject_outliers']
+
+
+def load_spectra(file_path):
+    """
+    Load the spectra from a CSV file.
+    
+    Parameters:
+    file_path (str): Path to the CSV file.
+    
+    Returns:
+    np.ndarray: Wavelength array.
+    np.ndarray: Flux array.
+    """
+    hdu1 = fits.open(file_path)
+    data = hdu1[1].data
+    #data = pd.read_csv(file_path)
+    return data['wavelength'], data['flux']
+
+def baseline_correction(flux, window_size=101, polyorder=3):
+    """
+    Correct the baseline of the spectrum.
+    
+    Parameters:
+    flux (np.ndarray): Flux array.
+    window_size (int): The length of the filter window (must be odd).
+    polyorder (int): The order of the polynomial used to fit the samples.
+    
+    Returns:
+    np.ndarray: Baseline-corrected flux array.
+    """
+    baseline = savgol_filter(flux, window_length=window_size, polyorder=polyorder)
+    corrected_flux = flux - baseline
+    return corrected_flux
+
+def identify_lines(wavelengths, flux, threshold=0.5):
+    """
+    Identify local maxima in the spectra as potential spectral lines.
+    
+    Parameters:
+    wavelengths (np.ndarray): Wavelength array.
+    flux (np.ndarray): Flux array.
+    threshold (float): Relative threshold for peak detection.
+    
+    Returns:
+    np.ndarray: Wavelengths of the identified lines.
+    """
+    peaks, _ = find_peaks(flux, height=np.max(flux) * threshold)
+    return wavelengths[peaks]
+
+def calculate_redshifts(identified_lines, rest_wavelengths, initial_redshift, tolerance=500):
+    """
+    Calculate the redshifts for each of the spectral lines individually.
+    
+    Parameters:
+    identified_lines (np.ndarray): Wavelengths of identified lines.
+    rest_wavelengths (dict): Rest-frame wavelengths of known lines.
+    initial_redshift (float): Initial guess of the redshift.
+    tolerance (float): Tolerance in angstroms for matching.
+    
+    Returns:
+    dict: Redshifts calculated from each line.
+    """
+    redshifts = {}
+    for line, rest_wave in rest_wavelengths.items():
+        expected_wave = rest_wave * (1 + initial_redshift)
+        differences = np.abs(identified_lines - expected_wave)
+       # print(f"Line: {line}, Expected wavelength: {expected_wave}, Differences: {differences}")
+        if np.min(differences) < tolerance:
+            observed_wave = identified_lines[np.argmin(differences)]
+            redshift = (observed_wave / rest_wave) - 1
+            redshifts[line] = redshift
+          #  print(f"Matched {line}: Observed wavelength: {observed_wave}, Calculated redshift: {redshift}")
+    return redshifts
+def filter_from_zwave(z, wavelength):
+    """
+    Function returns the photometric filter capturing the indicated wavelength in observed frame 
+    at this redshift
+    
+    Params
+    ---
+    z: float, dimensionlesss
+        dimensionless line of sight stretch factor due to expansion of the Universe
+    wavelenth: float, in micrometers (um)
+        Target wavelength
+    
+    
+    Returns
+    ---
+    Filter: string identifyer for filter in CEERS (change internal wavelength table for other 
+    fields or coverage)
+    
+    """
+    
+    conversion = 0.0001 #AA to um
+
+
+    #Building a dictionary of the filter widths and depths
+    width_dict = {60.6: np.array([(5889.2-(2189.2/2))*conversion, (5889.2+(2189.2/2))*conversion])*100, 
+                  81.4: np.array([(8039.1-(1565.2/2))*conversion, (8039.1+(1565.2/2))*conversion])*100,
+                  105.0: np.array([(1055.2-(265.0/2))*0.001, (1055.2+(265.0/2))*0.001])*100,
+                  115.0: np.array([(1.154-(0.225/2)), (1.154+(0.225/2))]),
+                  125.0: np.array([(1248.6-(284.5/2))*0.001, (1248.6+(284.5/2))*0.001])*100,
+                  140.0: np.array([(1392.3-(384.0/2))*0.001, (1392.3+(384.0/2))*0.001])*100,
+                  150.0: np.array([(1.501-(0.318/2)), (1.501+(0.318/2))])*100,
+                  160.0: np.array([(1536.9-(268.3/2))*0.001, (1536.9+(268.3/2))*0.001])*100,
+                  200.0: np.array([(1.990-(0.461/2), (1.990+(0.461/2)))])*100,
+                  277.0: np.array([(2.786-(0.672/2)), (2.786+(0.672/2))])*100,
+                  356.0: np.array([(3.365-(0.347/2)), (3.365+(0.347/2))])*100,
+                  410.0: np.array([(4.092-(0.436/2)), (4.092+(0.436/2))])*100,
+                  444.0: np.array([(4.421-(1.024/2)), (4.421+(1.024/2))])*100}
+    
+    val  = wavelength*(1+z)*10 #Converted to range that works will my silly dictionary
+    
+
+    tablekeys = []
+    for key in width_dict.keys():
+        try:
+            if width_dict[key][0]<val:
+                if width_dict[key][1]> val:
+                    tablekeys.append('F' + f'{int(key)}')
+        except:
+            if width_dict[key][0][0]<val:
+                if width_dict[key][0][1]> val:
+                    tablekeys.append('F' + f'{int(key)}')
+    return tablekeys
+
+
+def plot_interplolated():
+    """
+    INCOMPLETE: need to adapt code so that it takes proper imports. This is mostly 
+    copy/pasted from another error to preserve it.
+    """
+
+
+
+    plt.rcParams['figure.figsize'] = (20, 7)
+    #plot_sources(remaining['Object'], remaining, df_col6, 6)
+    df = artifactless
+    sources = photids
+    #plt.rcParams['figure.figsize'] = (20, 10)
+    #Grab filters from DataFrame
+    fs = []
+    fs_strings = []
+    a=df.index[0]
+    c=0
+    prismss = []
+    mgratss = []
+    scale = .1e-14
+    low_min = 0
+    datmin = -.01#-1e-5
+    emax = 1e-1
+
+    HST_filters = [140.0, 81.4, 60.6, 105.0, 125.0,  160.0]
+
+    val = 3
+
+    #mx = 
+
+    fs = []
+    fs_strings = []
+
+    for key in df.loc[a][3:16].keys():
+        fs.append(float(key.split('F')[1]))
+        fs_strings.append(key)
+    start=3
+    stop=16
+    stop2 = 29
+    f_final = []
+    for f in fs:
+        if f>600:
+            f_final.append(f*.1)
+        else:
+            f_final.append(f)
+
+    #Create a colormap 
+
+    #colormap = plt.cm.gist_ncar
+    #colors = [colormap(i) for i in np.linspace(0, 1,len(sources)+2)][1:-1]
+
+    #Create an SED for each of the sources
+    i=0
+    n=-1
+    for obj in sources[0:1]:
+        #print(obj)
+        fig, (ax1, ax2, ax3) = plt.subplots(3)
+        #fig.suptitle('Vertically stacked subplots')
+
+        #UN-COMMENT FOR PLOT ALPHA LABELS
+        #props = dict(boxstyle = 'square', facecolor = 'wheat', alpha = 0.2)
+        #ax1.text(0.7, 150, 'E', size = 'large', bbox = props)
+
+        n+=1
+        #print(shapes[i])
+        mk = np.array(df['Object']) == np.array(obj)
+        a = df[mk]
+        #Get the redshift and filters
+        rs = a['PHOTOM_RED_SHIFT']
+
+        try:
+            specrs = zpecs[zpecs['MPTID'] == mptids[n]]['Z'].values[0]
+        except:
+            specrs = np.nan
+        filters = np.array(a.keys()[start:stop].values)
+        filter_er = np.array(a.keys()[stop:stop2].values)
+        #Mask the data so all filter values are greater than 3 times their error
+        mask = (a[filters].values[0] > (3*a[filter_er].values[0]))& (a[filter_er].values[0]>0) 
+        #Sort the data so the SED plot connects from left to right, regardless of filter input order
+        z = sorted(zip(np.array(f_final)[mask],a[filters].values[0][mask]))
+        x=[i[0] for i in z]
+        y=[i[1] for i in z]
+
+
+
+        xerror = []
+        for j in x:
+            xerror.append(error_dict[j]/2)
+
+
+
+
+        ax1.errorbar(x,y,a[filter_er].values[0][mask], xerr = xerror, ls='none',
+                    color = 'k', marker = '*', markersize = 20, zorder = 1, label = 'JWST Data',
+                    markerfacecolor='r',)
+            #Add the x ticks
+        ax1.set_xticks(np.array(f_final)[mask])
+
+        itr = 0
+        for point in range(len(x)):
+            if itr == 0:
+                if x[point] in HST_filters:
+                    itr+=1
+                    ax1.plot(x[point], y[point], marker = '*', color = 'grey', markersize = 20, label = 'HST Data',
+                            zorder = 2)
+            else:
+                if x[point] in HST_filters:
+                    itr+=1
+                    ax1.plot(x[point], y[point], marker = '*', color = 'grey', markersize = 20,
+                            zorder = 2)
+
+
+        i+=1
+        ax1.axvspan(314, 398,  color = 'y', alpha = .25)
+        ax1.axvspan(386.4, 430.1,  alpha = 0.25, color = 'orange')
+        ax1.axvspan(388, 498.6,  color = 'r', alpha = .25)
+        ax1.axvspan(241.6, 312.7,  color = 'g', alpha = .25)
+
+        ax1.axvspan(175.5, 222.6,  color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+        ax1.axvspan(133.1, 166.8,  color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+        ax1.axvspan(101.3, 128.2,  color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+        ax1.legend()
+
+        #fig.suptitle(f'{obj} \n RS = {round(rs.values[0],2)} observed in {cathits[n]} \n NIRSpec matching distance: {d2ds[n]} \nMPTID {mptids[n]}')
+        fig.suptitle(f'{obj}  CEERS-{int(mptids[n])} zphot = {round(rs.values[0],2)}, zspec = {round(specrs,2)}') #observed in {cathits[n]} ')
+
+        #plt.title(f'{obj} \n RS = {round(rs.values[0],2)} observed in {cathits[n]} \n NIRSpec matching distance: {d2ds[n]} \nMPTID {mptids[n]}')
+        ax1.set_xlim(55,550)
+        ax1.set_ylabel('Flux (nJy)')
+        #plt.yscale("log")
+        #ax1.set_xlabel('Filter')
+        ax1.xaxis.tick_top()
+        flabels = np.array(['F115W', 'F150W', 'F200W', 'F277W', 'F356W', 'F410M', 'F444W'])
+        ax1.set_xticks(np.array([115, 150, 200, 277, 356, 410, 444]))
+        ax1.set_xticklabels(flabels)
+    ###
+
+        check = 0
+        pointing = cathits[n][-1][-1]
+        files = glob.glob(f'/home/kelcey/JWST_test_code/updated_sources/p{pointing}/*')
+        if len(files)==0:
+            #print(f'Download files for source {obj}')
+            check += 1
+        else:
+            prism = glob.glob(f'/home/kelcey/JWST_test_code/updated_sources/p{pointing}/'+
+                         f'p{pointing}_PRISM_{int(mptids[n])}_*')
+            #print(len(prism))
+            if len(prism)!=0:
+               # print('Prism available')
+                if prism[0][-8] == 's':
+                    d1 = prism[1]
+                    d2 = prism[0]
+
+                    hdu1 = fits.open(d1)
+                    datap1 = hdu1[1].data
+                    wave_1d = datap1['WAVELENGTH']
+                    flx_1d  = datap1['FLUX']
+                    pix_1d  = np.arange(len(wave_1d))
+
+                    datap1 = hdu1[1].data
+                    flux = []
+                    for f in flx_1d:
+                        if f<datmin:
+                            flux.append(np.nan)
+                        else:
+                            flux.append(f*1e-9)
+
+                    flux_e = []
+                    for f in datap1['FLUX_ERROR']:
+                        if f>emax:
+                            flux_e.append(np.nan)
+                        else:
+                            flux_e.append(f*1e-9)
+
+                    ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                    ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                         np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                    ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                    ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                    ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                    ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                    #Illustrate a detector gap
+                    #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                    ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                    ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                    ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                    ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                    ax3.set_ylabel(r'$F_{\lambda}$')
+                    ax3.set_xlim(.55,5.50)
+                    ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                    hdu = fits.open(d2)
+                    datap2 = hdu[1].data
+                    #55to550
+                    xs = np.linspace(.55, 5.5, int(1e4))
+                    spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                    for x in np.arange(datap2.shape[0]):
+                        inter = np.interp(xs, wave_1d, datap2[x] )
+                        spectra[x, :] = inter
+
+
+                    vmin = np.median(datap2) - val * np.std(datap2)
+                    vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                    ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                    ax2.set_xticks([])
+                    ax2.set_yticks([])
+
+                elif prism[0][-8] == 'x':
+
+                    ###
+                    d1 = prism[0]
+                    d2 = prism[1]
+
+                    hdu1 = fits.open(d1)
+                    datap1 = hdu1[1].data
+                    wave_1d = datap1['WAVELENGTH']
+                    flx_1d  = datap1['FLUX']
+                    pix_1d  = np.arange(len(wave_1d))
+
+                    datap1 = hdu1[1].data
+
+                    flux = []
+                    for f in flx_1d:
+                        if f<datmin:
+                            flux.append(np.nan)
+                        else:
+                            flux.append(f*1e-9)
+
+                    flux_e = []
+                    for f in datap1['FLUX_ERROR']:
+                        if f>emax:
+                            flux_e.append(np.nan)
+                        else:
+                            flux_e.append(f*1e-9)
+
+                    ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                    ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                         np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                    ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                    ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                    ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                    ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                    #Illustrate a detector gap
+                    #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                    ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                    ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                    ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                    ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                    ax3.set_ylabel(r'$F_{\lambda}$')
+                    ax3.set_xlim(.55,5.50)
+                    ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                    hdu = fits.open(d2)
+                    datap2 = hdu[1].data
+                    #55to550
+                    xs = np.linspace(.55, 5.5, int(1e4))
+                    spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                    for x in np.arange(datap2.shape[0]):
+                        inter = np.interp(xs, wave_1d, datap2[x] )
+                        spectra[x, :] = inter
+
+
+                    vmin = np.median(datap2) - val * np.std(datap2)
+                    vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                    ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                    ax2.set_xticks([])
+                    ax2.set_yticks([])
+    ###
+
+
+
+
+            elif len(prism)==0:
+                mgrat3 = glob.glob(f'/home/kelcey/JWST_test_code/updated_sources/p{pointing}/'+
+                         f'p{pointing}_G395M_{int(mptids[n])}_*')
+                if len(mgrat3)!=0:
+                   # print(f'M grating available for source {obj}')
+
+                    if mgrat3[0][-8] == 's':
+                        d1 = mgrat3[1]
+                        d2 = mgrat3[0]
+                       # print(mgrat3, mptids[n], '1D:', d1)
+
+                        mgratss.append(mptids[n])
+
+                        hdu1 = fits.open(d1)
+                        datap1 = hdu1[1].data
+                        wave_1d = datap1['WAVELENGTH']
+                        flx_1d  = datap1['FLUX']
+                        pix_1d  = np.arange(len(wave_1d))
+
+                        datap1 = hdu1[1].data
+                        flux = []
+                        for f in flx_1d:
+                            if f<datmin:
+                                flux.append(np.nan)
+                            else:
+                                flux.append(f*1e-9)
+
+                        flux_e = []
+                        for f in datap1['FLUX_ERROR']:
+                            if f>emax:
+                                flux_e.append(np.nan)
+                            else:
+                                flux_e.append(f*1e-9)
+
+                        ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                        ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                             np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                        ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                        ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                        ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                        ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                        #Illustrate a detector gap
+                        #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                        ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                        ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                        ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                        ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                        ax3.set_ylabel(r'$F_{\lambda}$')
+                        ax3.set_xlim(.55,5.50)
+                        ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                        hdu = fits.open(d2)
+                        datap2 = hdu[1].data
+                        #55to550
+                        xs = np.linspace(.55, 5.5, int(1e4))
+                        spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                        for x in np.arange(datap2.shape[0]):
+                            inter = np.interp(xs, wave_1d, datap2[x] )
+                            spectra[x, :] = inter
+
+
+                        vmin = np.median(datap2) - val * np.std(datap2)
+                        vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                        ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                        ax2.set_xticks([])
+                        ax2.set_yticks([])
+
+
+                    elif mgrat3[0][-8] == 'x':
+                        d1 = mgrat3[0]
+                        d2 = mgrat3[1]
+                       # print(mgrat3, mptids[n], '1D:', d1)
+
+                        mgratss.append(mptids[n])
+
+                        hdu1 = fits.open(d1)
+                        datap1 = hdu1[1].data
+                        wave_1d = datap1['WAVELENGTH']
+                        flx_1d  = datap1['FLUX']
+                        pix_1d  = np.arange(len(wave_1d))
+
+                        datap1 = hdu1[1].data
+                        flux = []
+                        for f in flx_1d:
+                            if f<datmin:
+                                flux.append(np.nan)
+                            else:
+                                flux.append(f*1e-9)
+
+                        flux_e = []
+                        for f in datap1['FLUX_ERROR']:
+                            if f>emax:
+                                flux_e.append(np.nan)
+                            else:
+                                flux_e.append(f*1e-9)
+
+                        ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                        ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                             np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                        ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                        ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                        ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                        ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                        #Illustrate a detector gap
+                        #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                        ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                        ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                        ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                        ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                        ax3.set_ylabel(r'$F_{\lambda}$')
+                        ax3.set_xlim(.55,5.50)
+                        ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                        hdu = fits.open(d2)
+                        datap2 = hdu[1].data
+                        #55to550
+                        xs = np.linspace(.55, 5.5, int(1e4))
+                        spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                        for x in np.arange(datap2.shape[0]):
+                            inter = np.interp(xs, wave_1d, datap2[x] )
+                            spectra[x, :] = inter
+
+
+                        vmin = np.median(datap2) - val * np.std(datap2)
+                        vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                        ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                        ax2.set_xticks([])
+                        ax2.set_yticks([])
+
+                elif len(mgrat3) == 0:
+                    check == 1
+                   # print(f'Download files for source {obj}')
+        if check == 1:
+
+            pointing = int(cathits[n][-1][-1])
+            #if:
+            ps = []
+            for h in cathits[n]:
+                p = h[-1]
+                try:
+                    int(p)
+                    if p !=pointing:
+                        ps.append(p)
+                except:
+                    y = True
+
+
+
+
+
+
+            if len(ps)!= 0:
+                for p in ps:
+                    pointing = p
+
+                    ###
+
+                    files = glob.glob(f'/home/kelcey/JWST_test_code/updated_sources/p{pointing}/*')
+                    if len(files)==0:
+                        #print(f'Download files for source {obj}')
+                        check == 1
+                    else:
+                        prism = glob.glob(f'/home/kelcey/JWST_test_code/updated_sources/p{pointing}/'+
+                                     f'p{pointing}_PRISM_{int(mptids[n])}_*')
+
+                       # prismss.append(mptids[n])
+                        #print(len(prism))
+                        if len(prism)!=0:
+                           # print('Prism available')
+                            if prism[0][-8] == 's':
+                                d1 = prism[1]
+                                d2 = prism[0]
+
+                                prismss.append(mptids[n])
+
+                                hdu1 = fits.open(d1)
+                                datap1 = hdu1[1].data
+                                wave_1d = datap1['WAVELENGTH']
+                                flx_1d  = datap1['FLUX']
+                                pix_1d  = np.arange(len(wave_1d))
+
+                                datap1 = hdu1[1].data
+                                flux = []
+                                for f in flx_1d:
+                                    if f<datmin:
+                                        flux.append(np.nan)
+                                    else:
+                                        flux.append(f*1e-9)
+
+                                flux_e = []
+                                for f in datap1['FLUX_ERROR']:
+                                    if f>emax:
+                                        flux_e.append(np.nan)
+                                    else:
+                                        flux_e.append(f*1e-9)
+
+                                ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                                ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                                     np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                                ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                                ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                                ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                                ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                                #Illustrate a detector gap
+                                #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                                ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                                ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                                ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                                ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                                ax3.set_ylabel(r'$F_{\lambda}$')
+                                ax3.set_xlim(.55,5.50)
+                                ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                                hdu = fits.open(d2)
+                                datap2 = hdu[1].data
+                                #55to550
+                                xs = np.linspace(.55, 5.5, int(1e4))
+                                spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                                for x in np.arange(datap2.shape[0]):
+                                    inter = np.interp(xs, wave_1d, datap2[x] )
+                                    spectra[x, :] = inter
+
+
+                                vmin = np.median(datap2) - val * np.std(datap2)
+                                vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                                ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                                ax2.set_xticks([])
+                                ax2.set_yticks([])
+
+                            elif prism[0][-8] == 'x':
+                                d1 = prism[0]
+                                d2 = prism[1]
+
+                                prismss.append(mptids[n])
+
+                                hdu1 = fits.open(d1)
+                                datap1 = hdu1[1].data
+                                wave_1d = datap1['WAVELENGTH']
+                                flx_1d  = datap1['FLUX']
+                                pix_1d  = np.arange(len(wave_1d))
+
+                                datap1 = hdu1[1].data
+                                flux = []
+                                for f in flx_1d:
+                                    if f<datmin:
+                                        flux.append(np.nan)
+                                    else:
+                                        flux.append(f*1e-9)
+
+                                flux_e = []
+                                for f in datap1['FLUX_ERROR']:
+                                    if f>emax:
+                                        flux_e.append(np.nan)
+                                    else:
+                                        flux_e.append(f*1e-9)
+
+                                ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                                ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                                     np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                                ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                                ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                                ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                                ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                                #Illustrate a detector gap
+                                #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                                ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                                ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                                ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                                ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                                ax3.set_ylabel(r'$F_{\lambda}$')
+                                ax3.set_xlim(.55,5.50)
+                                ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                                hdu = fits.open(d2)
+                                datap2 = hdu[1].data
+                                #55to550
+                                xs = np.linspace(.55, 5.5, int(1e4))
+                                spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                                for x in np.arange(datap2.shape[0]):
+                                    inter = np.interp(xs, wave_1d, datap2[x] )
+                                    spectra[x, :] = inter
+
+
+                                vmin = np.median(datap2) - val * np.std(datap2)
+                                vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                                ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                                ax2.set_xticks([])
+                                ax2.set_yticks([])
+
+
+                        elif len(prism)==0:
+                            mgrat3 = glob.glob(f'/home/kelcey/JWST_test_code/updated_sources/p{pointing}/'+
+                                     f'p{pointing}_G395M_{int(mptids[n])}_*')
+                            if len(mgrat3)!=0:
+                               # print(f'M grating available for source {obj}')
+
+                                if mgrat3[0][-8] == 's':
+                                    d1 = mgrat3[1]
+                                    d2 = mgrat3[0]
+                                   # print(mgrat3, mptids[n], '1D:', d1)
+                                    mgratss.append(mptids[n])
+
+                                    hdu1 = fits.open(d1)
+                                    datap1 = hdu1[1].data
+                                    wave_1d = datap1['WAVELENGTH']
+                                    flx_1d  = datap1['FLUX']
+                                    pix_1d  = np.arange(len(wave_1d))
+
+                                    datap1 = hdu1[1].data
+                                    flux = []
+                                    for f in flx_1d:
+                                        if f<datmin:
+                                            flux.append(np.nan)
+                                        else:
+                                            flux.append(f*1e-9)
+
+                                    flux_e = []
+                                    for f in datap1['FLUX_ERROR']:
+                                        if f>emax:
+                                            flux_e.append(np.nan)
+                                        else:
+                                            flux_e.append(f*1e-9)
+
+                                    ax3.plot(datap1['WAVELENGTH'], flux, clip_on = False)
+                                    ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                                         np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                                    ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                                    ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                                    ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                                    ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                                    #Illustrate a detector gap
+                                    #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                                    ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                                    ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                                    ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                                    ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                                    ax3.set_ylabel(r'$F_{\lambda}$')
+                                    ax3.set_xlim(.55,5.50)
+                                    ax3.set_ylim(low_min,scale)
+
+
+
+
+
+                                    hdu = fits.open(d2)
+                                    datap2 = hdu[1].data
+                                    #55to550
+                                    xs = np.linspace(.55, 5.5, int(1e4))
+                                    spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                                    for x in np.arange(datap2.shape[0]):
+                                        inter = np.interp(xs, wave_1d, datap2[x] )
+                                        spectra[x, :] = inter
+
+
+                                    vmin = np.median(datap2) - val * np.std(datap2)
+                                    vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                                    ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                                    ax2.set_xticks([])
+                                    ax2.set_yticks([])
+
+
+                                elif mgrat3[0][-8] == 'x':
+                                    d1 = mgrat3[0]
+                                    d2 = mgrat3[1]
+                                   # print(mgrat3, mptids[n], '1D:', d1)
+                                    hdu1 = fits.open(d1)
+                                    datap1 = hdu1[1].data
+                                    wave_1d = datap1['WAVELENGTH']
+                                    flx_1d  = datap1['FLUX']
+                                    pix_1d  = np.arange(len(wave_1d))
+
+                                    datap1 = hdu1[1].data
+                                    flux = []
+                                    for f in flx_1d:
+                                        if f<datmin:
+                                            flux.append(np.nan)
+                                        else:
+                                            flux.append(f*1e-9)
+
+                                    flux_e = []
+                                    for f in datap1['FLUX_ERROR']:
+                                        if f>emax:
+                                            flux_e.append(np.nan)
+                                        else:
+                                            flux_e.append(f*1e-9)
+
+                                    ax3.plot(datap1['WAVELENGTH'], flux,  clip_on = False)
+                                    ax3.fill_between(datap1['WAVELENGTH'], np.array(flux)-np.array(flux_e), 
+                                         np.array(flux)+np.array(flux_e), color = 'c', alpha  = 0.35, clip_on = False)
+                                    ax3.axvspan(3.14, 3.98, label= 'F356', color = 'y', alpha = .25)
+                                    ax3.axvspan(3.864, 4.301, label= 'F410', alpha = 0.25, color = 'orange')
+                                    ax3.axvspan(3.88, 4.986, label= 'F444', color = 'r', alpha = .25)
+                                    ax3.axvspan(2.416, 3.127, label= 'F277', color = 'g', alpha = .25)
+
+                                    #Illustrate a detector gap
+                                    #plt.axvspan(3.26,4.78,color = 'grey', alpha = 0.75)
+
+                                    ax3.axvspan(1.755, 2.226, label= 'F200', color = 'grey', alpha = 0.55)#color = 'cyan', alpha = .25)
+                                    ax3.axvspan(1.331, 1.668, label= 'F150', color = 'grey', alpha = 0.45)#color = 'blue', alpha = .25)
+                                    ax3.axvspan(1.013, 1.282, label= 'F115', color = 'grey', alpha = 0.25)#color = 'purple', alpha = .25)
+
+                                    ax3.set_xlabel(r'Wavelength[$\mu$m]')
+                                    ax3.set_ylabel(r'$F_{\lambda}$')
+                                    ax3.set_xlim(.55,5.50)
+                                    ax3.set_ylim(low_min,scale)
+
+                                    #ax3.set_xlim(.55,5.5) 
+
+
+
+
+                                    hdu = fits.open(d2)
+                                    dat
+                                    ap2 = hdu[1].data
+                                    #55to550
+                                    xs = np.linspace(.55, 5.5, int(1e4))
+                                    spectra = np.zeros(( datap2.shape[0], int(1e4)))
+                                    for x in np.arange(datap2.shape[0]):
+                                        inter = np.interp(xs, wave_1d, datap2[x] )
+                                        spectra[x, :] = inter
+
+
+                                    vmin = np.median(datap2) - val * np.std(datap2)
+                                    vmax = np.median(datap2) + val * np.std(datap2)
+
+
+                                    ax2.imshow(spectra , cmap = 'gray', vmin = vmin, vmax = vmax, origin = 'lower', aspect = 'auto')
+
+                                    ax2.set_xticks([])
+                                    ax2.set_yticks([])
+                                    #plt.show()
+                                    #plt.close()
+                                    #plt.figure();
+
+                            elif len(mgrat3) == 0:
+                                check += 1
+                               # print(f'Download files for source {obj}')
+
+
+                    ###nircam9-90381
+
+            elif len(ps) == 0:
+                print(f'Download files for source {obj}')
+    
+
+__all__ = ["get_color_table", "load_photometry", 'jon_plot', "cut_sides", "get_ew", "get_ew_277", "get_ew_red_only_and_277", "get_ew_red_only", "plot_class", "plot_em_all", "get_sed", 'reject_outliers', "load_spectra", "baseline_correction",
+          "identify_lines", "calculate_redshifts", 'filter_from_zwave', "plot_interplolated"]
